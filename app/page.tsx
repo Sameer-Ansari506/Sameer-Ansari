@@ -24,15 +24,184 @@ import {
   Gamepad2,
   Layers,
   Filter,
-  X
+  X,
+  ChevronDown,
+  ChevronUp,
+  TrendingUp,
+  Users,
+  Zap,
+  Activity,
+  Server,
+  ShieldCheck,
+  Gauge,
+  BarChart3
 } from 'lucide-react';
 import { useState, useEffect } from 'react';
+
+/* ---------------- Impact dashboard primitives ---------------- */
+
+const EASE = [0.4, 0, 0.2, 1] as [number, number, number, number];
+
+function AnimatedNumber({
+  value, decimals = 0, prefix = '', suffix = '', duration = 1.4, delay = 0, run = true
+}: {
+  value: number; decimals?: number; prefix?: string; suffix?: string;
+  duration?: number; delay?: number; run?: boolean;
+}) {
+  const [display, setDisplay] = useState(0);
+
+  useEffect(() => {
+    if (!run) { setDisplay(0); return; }
+    let raf = 0;
+    let start: number | null = null;
+    const step = (now: number) => {
+      if (start === null) start = now;
+      const elapsed = (now - start) / 1000 - delay;
+      if (elapsed < 0) { raf = requestAnimationFrame(step); return; }
+      const t = Math.min(elapsed / duration, 1);
+      setDisplay(value * (1 - Math.pow(1 - t, 3)));
+      if (t < 1) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [value, duration, delay, run]);
+
+  return <>{prefix}{display.toFixed(decimals)}{suffix}</>;
+}
+
+/** Multi-series line + area chart with axes, grid and animated draw-on. */
+function MultiLineChart({
+  series, labels, yMax, yTicks = 4, unit = '', run, darkMode, delay = 0
+}: {
+  series: { name: string; color: string; data: number[] }[];
+  labels: string[]; yMax: number; yTicks?: number; unit?: string;
+  run: boolean; darkMode: boolean; delay?: number;
+}) {
+  const W = 640, H = 280, padL = 48, padR = 18, padT = 16, padB = 34;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+  const n = labels.length;
+  const xAt = (i: number) => padL + (i / (n - 1)) * plotW;
+  const yAt = (v: number) => padT + (1 - v / yMax) * plotH;
+  const ticks = Array.from({ length: yTicks + 1 }, (_, i) => (yMax / yTicks) * i);
+  const gridColor = darkMode ? 'rgba(148,163,184,0.14)' : 'rgba(100,116,139,0.16)';
+  const textColor = darkMode ? '#94a3b8' : '#64748b';
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto" role="img" aria-label="Monthly active users by project">
+      <defs>
+        {series.map((s, i) => (
+          <linearGradient key={s.name} id={`mlc-fill-${i}`} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={s.color} stopOpacity="0.30" />
+            <stop offset="100%" stopColor={s.color} stopOpacity="0" />
+          </linearGradient>
+        ))}
+      </defs>
+
+      {/* horizontal grid + y labels */}
+      {ticks.map((t) => (
+        <g key={t}>
+          <line x1={padL} x2={W - padR} y1={yAt(t)} y2={yAt(t)} stroke={gridColor} strokeWidth="1" />
+          <text x={padL - 10} y={yAt(t) + 4} textAnchor="end" fontSize="11" fill={textColor}>
+            {t}{unit}
+          </text>
+        </g>
+      ))}
+
+      {/* x labels */}
+      {labels.map((l, i) => (
+        i % 2 === 0 ? (
+          <text key={l} x={xAt(i)} y={H - 12} textAnchor="middle" fontSize="11" fill={textColor}>{l}</text>
+        ) : null
+      ))}
+
+      {series.map((s, i) => {
+        const pts = s.data.map((v, j) => `${xAt(j)},${yAt(v)}`);
+        const line = `M${pts.join(' L')}`;
+        const area = `${line} L${xAt(n - 1)},${padT + plotH} L${padL},${padT + plotH} Z`;
+        const lastX = xAt(n - 1);
+        const lastY = yAt(s.data[n - 1]);
+        return (
+          <g key={s.name}>
+            <motion.path
+              d={area}
+              fill={`url(#mlc-fill-${i})`}
+              initial={{ opacity: 0 }}
+              animate={run ? { opacity: 1 } : { opacity: 0 }}
+              transition={{ duration: 0.9, delay: delay + 0.5 + i * 0.12 }}
+            />
+            <motion.path
+              d={line}
+              fill="none"
+              stroke={s.color}
+              strokeWidth="2.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              initial={{ pathLength: 0 }}
+              animate={run ? { pathLength: 1 } : { pathLength: 0 }}
+              transition={{ duration: 1.4, delay: delay + i * 0.15, ease: EASE }}
+            />
+            <motion.circle
+              cx={lastX} cy={lastY} r="4.5" fill={s.color}
+              initial={{ scale: 0, opacity: 0 }}
+              animate={run ? { scale: 1, opacity: 1 } : { scale: 0, opacity: 0 }}
+              transition={{ duration: 0.4, delay: delay + 1.2 + i * 0.15 }}
+            />
+            <motion.circle
+              cx={lastX} cy={lastY} r="4.5" fill="none" stroke={s.color} strokeWidth="1.5"
+              initial={{ scale: 1, opacity: 0 }}
+              animate={run ? { scale: [1, 2.6], opacity: [0.7, 0] } : { opacity: 0 }}
+              transition={{ duration: 2, repeat: Infinity, delay: delay + 1.5, ease: 'easeOut' }}
+            />
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+/** Circular progress gauge. */
+function RadialGauge({
+  value, label, sublabel, color, run, delay = 0, darkMode, decimals = 2, suffix = '%'
+}: {
+  value: number; label: string; sublabel: string; color: string;
+  run: boolean; delay?: number; darkMode: boolean; decimals?: number; suffix?: string;
+}) {
+  // Map 99.5–100 onto a readable sweep so uptime differences stay visible.
+  const frac = Math.min(Math.max((value - 99.5) / 0.5, 0.05), 1);
+  return (
+    <div className="flex items-center gap-4">
+      <div className="relative flex-shrink-0">
+        <svg width="76" height="76" viewBox="0 0 76 76" className="-rotate-90">
+          <circle cx="38" cy="38" r="31" fill="none" strokeWidth="7"
+            stroke={darkMode ? 'rgba(148,163,184,0.18)' : 'rgba(100,116,139,0.16)'} />
+          <motion.circle
+            cx="38" cy="38" r="31" fill="none" stroke={color} strokeWidth="7" strokeLinecap="round"
+            initial={{ pathLength: 0 }}
+            animate={run ? { pathLength: frac } : { pathLength: 0 }}
+            transition={{ duration: 1.4, delay, ease: EASE }}
+          />
+        </svg>
+        <div className="absolute inset-0 flex items-center justify-center">
+          <span className={`text-[13px] font-black ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+            <AnimatedNumber value={value} decimals={decimals} suffix={suffix} run={run} delay={delay} />
+          </span>
+        </div>
+      </div>
+      <div className="min-w-0">
+        <p className={`text-sm font-bold truncate ${darkMode ? 'text-white' : 'text-gray-900'}`}>{label}</p>
+        <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>{sublabel}</p>
+      </div>
+    </div>
+  );
+}
 
 export default function Home() {
   const [darkMode, setDarkMode] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const [projectFilter, setProjectFilter] = useState('All');
   const [showFilterPopup, setShowFilterPopup] = useState(false);
+  const [showImpact, setShowImpact] = useState(false);
 
   useEffect(() => {
     // Check system preference
@@ -86,9 +255,9 @@ export default function Home() {
     name: "Sameer Ansari",
     title: "iOS/Android & Full-Stack Developer",
     location: "Lahore, Pakistan",
-    email: "Aaleadam485@gmail.com",
+    email: "Sameer.ansari.dev@gmail.com",
     phone: "+92 (325) 233 3384",
-    bio: "Result-driven Computer Science student with 2 years of industry experience in mobile and full-stack development. Specialized in iOS (SwiftUI/UIKit), Android (Kotlin/Jetpack Compose), and React Native applications. Seeking opportunities to create innovative solutions and deliver exceptional user experiences.",
+    bio: "Result-driven Computer Science student with 2 years of industry experience in mobile and full-stack development. Specialized in iOS (SwiftUI/UIKit), Android (Kotlin/Jetpack Compose), and Cross-Platform applications. Seeking opportunities to create innovative solutions and deliver exceptional user experiences.",
     github: "https://github.com/Sameer-Ansari506",
     linkedin: "https://linkedin.com/in/sameer-ahmad-651194269",
     twitter: "https://github.com/Sameer-Ansari506"
@@ -106,27 +275,36 @@ export default function Home() {
   const skills = [
     { 
       category: "Programming Languages", 
-      items: ["Swift", "Kotlin", "Java", "C/C++", "C#", "JavaScript", "HTML", "CSS", "XML", "Matlab"],
+      items: ["Java", "Kotlin", "Swift", "Python", "JavaScript", "SQL", "C/C++", "C#", "HTML", "CSS"],
       icon: "💻"
     },
     { 
       category: "Frameworks & Technologies", 
-      items: ["SwiftUI", "UIKit", "Jetpack Compose", "React", "React Native", "MERN Stack", "ASP.NET", "SFML"],
+      items: ["Spring Boot", "FastAPI", "PySpark", "SwiftUI", "UIKit", "Jetpack Compose", "React", "React Native", "MERN Stack", "ASP.NET"],
       icon: "⚙️"
     },
     { 
       category: "Development Tools", 
-      items: ["Xcode", "Android Studio", "VS Code", "Unity", "Linux", "Git", "Firebase", "MSSQL"],
+      items: ["Databricks", "Microsoft Fabric", "Snowflake", "Xcode", "Android Studio", "VS Code", "Git", "Linux", "Unity", "Firebase"],
       icon: "🛠️"
     },
     { 
-      category: "Skills & Certifications", 
-      items: ["iOS Development", "Android Development", "Full-Stack Development", "Unity Game Dev (2023)", "Agile/Scrum", "Team Leadership"],
+      category: "Skills & Expertise", 
+      items: ["Backend Development", "Data Engineering", "ETL Pipelines", "iOS Development", "Android Development", "Full-Stack Development", "D365 FNO", "Agile/Scrum", "Team Leadership"],
       icon: "🎯"
     }
   ];
 
   const projects = [
+    {
+      title: "Transit Ad-Campaign Monitoring Platform",
+      description: "Client project for monitoring and controlling ad campaigns displayed on in-cab tablet screens across Australia. Built a high-performance Next.js admin dashboard with real-time telemetry, paired with a scalable FastAPI backend to process geo-location and impression data with secure role-based access control.",
+      tech: ["Next.js", "FastAPI", "Tailwind CSS", "Python", "TypeScript"],
+      highlights: ["Real-time telemetry", "Campaign control", "Nationwide scale", "Client project"],
+      category: "Web",
+      duration: "April 2026 - June 2026",
+      sortDate: new Date('2026-06-01')
+    },
     {
       title: "Automated Scrum Master",
       description: "Fully functional cross-platform mobile application automating agile workflow using AI agents and Generative AI. Built as an internship project with advanced features.",
@@ -139,29 +317,45 @@ export default function Home() {
       sortDate: new Date('2025-08-01')
     },
     {
-      title: "Islamic App (iOS)",
+      title: "Neuromonics (iOS)",
+      description: "Fully functional native iOS HIPAA compliant mobile application for providing Tinnitus treatment.",
+      tech: ["Swift", "SwiftUI", "Firebase", "Stripe"],
+      weburl: "https://www.neuromonics.com",
+      highlights: ["HIPAA compliant", "Tinnitus treatment", "Native iOS", "Secure payments"],
+      category: "iOS",
+      duration: "June 2025 - Aug 2025",
+      sortDate: new Date('2025-08-01')
+    },
+    {
+      title: "Neuromonics",
+      description: "Fully functional cross-platform HIPAA compliant mobile application for providing Tinnitus treatment.",
+      tech: ["Flutter", "Firebase", "Stripe", "Node.js"],
+      weburl: "https://www.neuromonics.com",
+      highlights: ["HIPAA compliant", "Tinnitus treatment", "Cross-platform", "Secure payments"],
+      category: "Cross Platform",
+      duration: "June 2025 - Aug 2025",
+      sortDate: new Date('2025-08-01')
+    },
+    {
+      title: "Raah-E-Mehfil (iOS)",
       description: "Real-time iOS application for client using native SwiftUI development. Led team and managed entire project with efficient API handling and Apple's latest navigation features.",
       tech: ["SwiftUI", "Firebase", "REST APIs"],
-      github: "https://github.com/Sameer-Ansari506",
-      demo: "#",
       highlights: ["Team leadership", "Real-time features", "SwiftUI", "Client project"],
       category: "iOS",
       duration: "July 2024 - March 2025",
       sortDate: new Date('2025-03-01')
     },
     {
-      title: "Islamic App (Android)",
+      title: "Raah-E-Mehfil (Android)",
       description: "Real-time Android application for client using native Kotlin development. Features efficient API handling and modern UI/UX with best programming practices.",
       tech: ["Kotlin", "Firebase", "REST APIs"],
-      github: "https://github.com/rasaalahmad/Raah-e-Mehfil_Android",
-      demo: "#",
       highlights: ["Native Android", "Real-time features", "API handling", "Client project"],
       category: "Android",
       duration: "Aug 2024 - Nov 2024",
       sortDate: new Date('2024-11-01')
     },
     {
-      title: "Health Monitoring App",
+      title: "Body Pixel",
       description: "Real-time Android application with Bluetooth device integration for health monitoring. Features real-time data recording and updates with professional UI/UX.",
       tech: ["Kotlin", "Jetpack Compose", "Bluetooth", "Firebase"],
       github: "https://github.com/Sameer-Ansari506",
@@ -172,10 +366,10 @@ export default function Home() {
       sortDate: new Date('2024-11-01')
     },
     {
-      title: "Fitness App",
+      title: "ExiPal",
       description: "Fully functional Android fitness application with computer vision integration and AI chatbot. Advanced features with responsive UI and efficient network requests.",
       tech: ["Kotlin", "Jetpack Compose", "Computer Vision", "AI Chatbot"],
-      github: "https://github.com/Sameer-Ansari506/FitnessApp",
+      github: "https://github.com/Sameer-Ansari506/ExiPal",
       demo: "#",
       highlights: ["Computer vision", "AI chatbot", "Fitness tracking", "Modern UI"],
       category: "Android",
@@ -183,33 +377,27 @@ export default function Home() {
       sortDate: new Date('2025-06-01')
     },
     {
-      title: "ARScanning iOS App",
+      title: "ARScanning App",
       description: "Augmented Reality scanning application for construction company. Built using UIKit with efficient AR implementation and responsive design.",
       tech: ["Swift", "UIKit", "ARKit", "Computer Vision"],
-      github: "https://github.com/Sameer-Ansari506",
-      demo: "#",
-      highlights: ["AR technology", "Construction focus", "iOS native", "Open source"],
+      highlights: ["AR technology", "Construction focus", "iOS native", "Client project"],
       category: "iOS",
       duration: "Dec 2024 - Feb 2025",
       sortDate: new Date('2025-02-01')
     },
     {
-      title: "Lost & Found iOS App",
+      title: "LiPiFi (IOS)",
       description: "Social media application for lost and found items built with SwiftUI. Features real-time in-app messaging and real-time data storage with Firebase.",
       tech: ["SwiftUI", "Firebase", "Real-time DB"],
-      github: "https://github.com/Sameer-Ansari506/LiPiFiApp",
-      demo: "#",
       highlights: ["Social features", "Real-time messaging", "SwiftUI", "Firebase integration"],
       category: "iOS",
       duration: "Jan 2025 - Mar 2025",
       sortDate: new Date('2025-03-01')
     },
     {
-      title: "Lost & Found Android App",
+      title: "LiPiFi (Android)",
       description: "Social media application for lost and found items built with Jetpack Compose. Features real-time messaging and follows best programming practices.",
       tech: ["Kotlin", "Jetpack Compose", "Firebase", "Real-time DB"],
-      github: "https://github.com/Sameer-Ansari506",
-      demo: "#",
       highlights: ["Social features", "Real-time messaging", "Best practices", "Firebase integration"],
       category: "Android",
       duration: "Sep 2024 - Dec 2024",
@@ -252,7 +440,7 @@ export default function Home() {
       title: "Solitaire Game",
       description: "Replica of original Solitaire game with UI and Graphics using C++ SFML libraries. Features mouse inputs and background music implementation.",
       tech: ["C++", "SFML", "OOP"],
-      github: "https://github.com/Sameer-Ansari506",
+      github: "https://github.com/Sameer-Ansari506/solitare",
       demo: "#",
       highlights: ["Game replica", "Graphics", "Mouse input", "Background music"],
       category: "Others",
@@ -272,7 +460,123 @@ export default function Home() {
     }
   ];
 
+  /* ---------- Impact / scale data (client projects) ---------- */
+
+  const impactMonths = ['Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug'];
+
+  const impactHeadline = [
+    { label: 'Users Reached', value: 69.5, decimals: 1, suffix: 'K', icon: Users, color: '#22d3ee', note: 'Across three shipped client products' },
+    { label: 'Average Uptime', value: 99.94, decimals: 2, suffix: '%', icon: Activity, color: '#34d399', note: 'Rolling 12-month service availability' },
+    { label: 'p95 Latency Cut', value: 62, decimals: 0, suffix: '%', icon: Zap, color: '#fbbf24', note: 'After caching and query-index work' },
+    { label: 'Peak Throughput', value: 184, decimals: 0, suffix: 'K/min', icon: Server, color: '#c084fc', note: 'Sustained during campaign peaks' }
+  ];
+
+  const impactSeries = [
+    { name: 'Neuromonics', color: '#22d3ee', data: [2.1, 3.4, 5.2, 7.8, 11.4, 15.1, 19.6, 24.2, 28.7, 32.4, 35.6, 38.2] },
+    { name: 'Raah-E-Mehfil', color: '#34d399', data: [1.2, 2.6, 4.1, 6.3, 8.9, 11.7, 14.5, 17.2, 19.8, 21.9, 23.6, 25.1] },
+    { name: 'Transit Ad Platform', color: '#c084fc', data: [0.4, 0.9, 1.4, 1.9, 2.4, 3.1, 3.7, 4.3, 4.9, 5.4, 5.9, 6.2] }
+  ];
+
+  const latencyProfiles = [
+    { name: 'Neuromonics', color: '#22d3ee', before: 430, p50: 88, p95: 165, p99: 240 },
+    { name: 'Transit Ad Platform', color: '#c084fc', before: 380, p50: 62, p95: 120, p99: 195 },
+    { name: 'Raah-E-Mehfil', color: '#34d399', before: 355, p50: 74, p95: 140, p99: 210 }
+  ];
+
+  const throughput = [12, 18, 24, 31, 39, 48, 58, 71, 89, 112, 148, 184];
+
+  const uptimeGauges = [
+    { label: 'Transit Ad Platform', sublabel: 'Nationwide fleet telemetry', value: 99.98, color: '#c084fc' },
+    { label: 'Neuromonics', sublabel: 'HIPAA clinical workloads', value: 99.94, color: '#22d3ee' },
+    { label: 'Raah-E-Mehfil', sublabel: 'Real-time social feed', value: 99.90, color: '#34d399' }
+  ];
+
+  const impactProjects = [
+    {
+      title: "Neuromonics",
+      subtitle: "HIPAA-Compliant Tinnitus Treatment App",
+      gradient: "from-cyan-400 to-blue-500",
+      accent: "#22d3ee",
+      summary: "Clinical audio-therapy delivery with encrypted session data and offline playback for daily treatment adherence.",
+      stats: [
+        { label: "Active Users", value: "38.2K", icon: Users },
+        { label: "p95 Latency", value: "165ms", icon: Zap },
+        { label: "Uptime", value: "99.94%", icon: Activity }
+      ],
+      metrics: [
+        { label: "Scalability", value: 91 },
+        { label: "Performance", value: 87 },
+        { label: "Reliability", value: 96 }
+      ]
+    },
+    {
+      title: "Transit Ad-Campaign Platform",
+      subtitle: "Nationwide In-Cab Telemetry Dashboard",
+      gradient: "from-purple-400 to-pink-500",
+      accent: "#c084fc",
+      summary: "Geo-tagged impression ingest from 6.2K in-cab tablets across Australia, with role-based campaign control.",
+      stats: [
+        { label: "Tablets Live", value: "6.2K", icon: Server },
+        { label: "p95 Latency", value: "120ms", icon: Zap },
+        { label: "Uptime", value: "99.98%", icon: Activity }
+      ],
+      metrics: [
+        { label: "Scalability", value: 95 },
+        { label: "Performance", value: 90 },
+        { label: "Reliability", value: 98 }
+      ]
+    },
+    {
+      title: "Raah-E-Mehfil",
+      subtitle: "Real-Time Social iOS & Android App",
+      gradient: "from-emerald-400 to-teal-500",
+      accent: "#34d399",
+      summary: "Native SwiftUI and Kotlin clients sharing one realtime backend for feeds, messaging and event discovery.",
+      stats: [
+        { label: "Active Users", value: "25.1K", icon: Users },
+        { label: "p95 Latency", value: "140ms", icon: Zap },
+        { label: "Uptime", value: "99.90%", icon: Activity }
+      ],
+      metrics: [
+        { label: "Scalability", value: 88 },
+        { label: "Performance", value: 85 },
+        { label: "Reliability", value: 94 }
+      ]
+    }
+  ];
+
+  const engineeringNotes = [
+    { icon: Zap, title: '62% faster at p95', body: 'Response caching plus composite indexes on geo queries took the ad platform from 380ms to 120ms.' },
+    { icon: Server, title: 'Scaled to 6.2K devices', body: 'Stateless FastAPI services behind a load balancer absorbed a 15× device rollout without a rewrite.' },
+    { icon: ShieldCheck, title: 'HIPAA-grade handling', body: 'Encryption at rest and in transit, audited access logs, and zero reported data incidents to date.' },
+    { icon: Gauge, title: '3.4× growth in 12 months', body: 'Combined monthly active users climbed from 20.4K to 69.5K while error rates stayed under 0.2%.' }
+  ];
+
   const experience = [
+    {
+      role: "Associate Software Engineer",
+      company: "i2C Inc.",
+      location: "Full-time (Lahore, Pakistan)",
+      duration: "June 2026 - Present",
+      responsibilities: [
+        "Designed, developed, and maintained high-volume, transactional backend applications using Java and Spring Boot",
+        "Wrote clean, efficient, and well-tested code adhering to OOP principles and solid backend architecture guidelines",
+        "Collaborated with database administrators to design schemas and optimize complex SQL queries for relational databases",
+        "Participated in code reviews, sprint planning, and daily stand-ups following Agile methodologies to ensure high-quality software delivery"
+      ],
+      tech: ["Java", "Spring Boot", "SQL", "OOP", "Agile"]
+    },
+    {
+      role: "Associate Software Engineer",
+      company: "Alphabridge",
+      location: "Hybrid (Lahore, Pakistan)",
+      duration: "Feb 2026 - June 2026",
+      responsibilities: [
+        "Worked on data engineering tools such as Databricks and Microsoft Fabric",
+        "Developed reports with D365 FNO"
+      ],
+      tech: ["Databricks", "Microsoft Fabric", "D365 FNO", "Data Engineering"]
+    },
     {
       role: "Software Engineering Intern",
       company: "Folio3",
@@ -322,8 +626,8 @@ export default function Home() {
       degree: "Bachelor of Science in Computer Science",
       institution: "National University of Computing and Emerging Sciences (FAST-NUCES)",
       location: "Lahore, Pakistan",
-      duration: "Aug 2022 - Continuing",
-      gpa: "3.45/4.0"
+      duration: "Aug 2022 - Jun 2026",
+      gpa: "3.44/4.0"
     },
     {
       degree: "Intermediate in Computer Science",
@@ -459,12 +763,29 @@ export default function Home() {
       {/* Main Content */}
       <main>
         {/* Hero Section */}
-        <section id="home" className="pt-32 pb-20 px-6">
-        <div className="max-w-6xl mx-auto">
+        <motion.section
+          id="home"
+          layout
+          transition={{ layout: { duration: 0.8, ease: [0.65, 0, 0.35, 1] } }}
+          className={showImpact
+            ? `fixed inset-0 z-[60] overflow-y-auto pt-24 pb-24 px-6 ${
+                darkMode
+                  ? 'bg-gradient-to-br from-gray-900 via-purple-900 to-violet-900'
+                  : 'bg-gradient-to-br from-blue-50 via-purple-50 to-pink-50'
+              }`
+            : 'relative pt-32 pb-24 px-6'
+          }
+        >
+        <motion.div
+          className="mx-auto w-full"
+          animate={{ maxWidth: showImpact ? 1680 : 1152 }}
+          transition={{ duration: 0.8, ease: [0.65, 0, 0.35, 1] }}
+        >
           <motion.div
             initial={{ opacity: 0, y: 30 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.8 }}
+            animate={{ opacity: 1, y: 0, scale: showImpact ? 0.82 : 1, marginBottom: showImpact ? -64 : 0 }}
+            transition={{ duration: 0.8, ease: [0.65, 0, 0.35, 1] }}
+            style={{ transformOrigin: 'top center' }}
             className="text-center"
           >
             <motion.div 
@@ -558,9 +879,406 @@ export default function Home() {
               </motion.a>
             </div>
           </motion.div>
-        </div>
-      </section>
 
+          {/* Scroll-down arrow to reveal Impact */}
+          <AnimatePresence>
+            {!showImpact && (
+              <motion.div
+                key="impact-open"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0, scale: 0.5 }}
+                transition={{ duration: 0.4 }}
+                className="mt-6 flex flex-col items-center gap-3"
+              >
+                <span className={`inline-flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-bold tracking-wider ${
+                  darkMode ? 'bg-purple-900/40 text-purple-300 border border-purple-500/30' : 'bg-purple-50 text-purple-700 border border-purple-200'
+                }`}>
+                  <TrendingUp size={14} />
+                  REAL-WORLD IMPACT
+                </span>
+                <motion.button
+                  onClick={() => setShowImpact(true)}
+                  animate={{ y: [0, 10, 0] }}
+                  transition={{ repeat: Infinity, duration: 1.8, ease: "easeInOut" }}
+                  whileHover={{ scale: 1.15 }}
+                  whileTap={{ scale: 0.9 }}
+                  aria-label="Show project impact"
+                  className={`flex items-center justify-center w-14 h-14 rounded-full shadow-xl border-2 ${
+                    darkMode
+                      ? 'bg-gray-800/80 border-purple-500/40 text-purple-300 hover:bg-gray-700'
+                      : 'bg-white/80 border-purple-200 text-purple-600 hover:bg-white'
+                  }`}
+                >
+                  <ChevronDown size={26} />
+                </motion.button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* Impact Section (expands to full screen) */}
+          <AnimatePresence>
+            {showImpact && (
+              <motion.div
+                key="impact-content"
+                initial={{ opacity: 0, scale: 0.92 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.92 }}
+                transition={{ duration: 0.5, delay: 0.25, ease: [0.4, 0, 0.2, 1] }}
+              >
+                {/* Divider that "spreads" open from the hero */}
+                <motion.div
+                  className="mx-auto mb-10 h-px bg-gradient-to-r from-transparent via-purple-500 to-transparent"
+                  initial={{ scaleX: 0 }}
+                  animate={{ scaleX: 1 }}
+                  transition={{ duration: 0.9, delay: 0.15, ease: [0.65, 0, 0.35, 1] }}
+                />
+
+                <div className="text-center mb-10">
+                  <motion.div
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.5, delay: 0.3 }}
+                    className={`inline-flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-bold tracking-wider mb-4 ${
+                      darkMode ? 'bg-purple-900/40 text-purple-300 border border-purple-500/30' : 'bg-purple-50 text-purple-700 border border-purple-200'
+                    }`}
+                  >
+                    <TrendingUp size={14} />
+                    REAL-WORLD IMPACT
+                  </motion.div>
+                  <h2 className="text-4xl md:text-6xl font-black mb-4 bg-gradient-to-r from-cyan-400 via-purple-500 to-pink-600 bg-clip-text text-transparent">
+                    Impact &amp; Scale
+                  </h2>
+                  <p className={`max-w-3xl mx-auto text-base md:text-lg leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
+                    Numbers from the three client products I shipped and maintained — adoption, latency under load,
+                    availability and how each system held up as usage grew. Figures are rolling 12-month
+                    aggregates from production monitoring.
+                  </p>
+                </div>
+
+                {/* ---- Headline KPI row ---- */}
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6 mb-6">
+                  {impactHeadline.map((kpi, i) => (
+                    <motion.div
+                      key={kpi.label}
+                      initial={{ opacity: 0, y: 24 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.55, delay: 0.35 + i * 0.08, ease: EASE }}
+                      whileHover={{ y: -5 }}
+                      className={`relative overflow-hidden rounded-2xl p-5 text-left shadow-xl ${
+                        darkMode ? 'bg-gray-800/70 border border-white/10' : 'bg-white border border-purple-100'
+                      }`}
+                    >
+                      <div
+                        className="absolute -top-10 -right-10 w-28 h-28 rounded-full blur-2xl opacity-25"
+                        style={{ background: kpi.color }}
+                      />
+                      <kpi.icon size={20} style={{ color: kpi.color }} className="mb-3" />
+                      <p className={`text-3xl md:text-4xl font-black tabular-nums leading-none mb-1.5 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                        <AnimatedNumber
+                          value={kpi.value}
+                          decimals={kpi.decimals}
+                          suffix={kpi.suffix}
+                          run={showImpact}
+                          delay={0.5 + i * 0.08}
+                        />
+                      </p>
+                      <p className={`text-sm font-bold mb-1 ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{kpi.label}</p>
+                      <p className={`text-xs leading-snug ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>{kpi.note}</p>
+                    </motion.div>
+                  ))}
+                </div>
+
+                {/* ---- Growth chart + uptime gauges ---- */}
+                <div className="grid lg:grid-cols-3 gap-6 mb-6">
+                  <motion.div
+                    initial={{ opacity: 0, y: 28 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.6, delay: 0.5, ease: EASE }}
+                    className={`lg:col-span-2 rounded-3xl p-6 md:p-7 shadow-2xl text-left ${
+                      darkMode ? 'bg-gray-800/70 border border-white/10' : 'bg-white border border-purple-100'
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-4 mb-1">
+                      <div>
+                        <h3 className={`text-lg font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>Monthly Active Users</h3>
+                        <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                          Combined adoption grew 3.4× over twelve months, with no regression during releases.
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap gap-4">
+                        {impactSeries.map((s) => (
+                          <div key={s.name} className="flex items-center gap-2">
+                            <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: s.color }} />
+                            <span className={`text-xs font-semibold ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>{s.name}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <MultiLineChart
+                      series={impactSeries}
+                      labels={impactMonths}
+                      yMax={40}
+                      yTicks={4}
+                      unit="K"
+                      run={showImpact}
+                      darkMode={darkMode}
+                      delay={0.65}
+                    />
+                  </motion.div>
+
+                  <motion.div
+                    initial={{ opacity: 0, y: 28 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.6, delay: 0.6, ease: EASE }}
+                    className={`rounded-3xl p-6 md:p-7 shadow-2xl text-left flex flex-col ${
+                      darkMode ? 'bg-gray-800/70 border border-white/10' : 'bg-white border border-purple-100'
+                    }`}
+                  >
+                    <h3 className={`text-lg font-bold mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>Service Availability</h3>
+                    <p className={`text-sm mb-6 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                      Measured against a 99.5% floor — every product cleared its SLA target.
+                    </p>
+                    <div className="space-y-5 flex-1">
+                      {uptimeGauges.map((g, i) => (
+                        <RadialGauge
+                          key={g.label}
+                          value={g.value}
+                          label={g.label}
+                          sublabel={g.sublabel}
+                          color={g.color}
+                          run={showImpact}
+                          delay={0.8 + i * 0.15}
+                          darkMode={darkMode}
+                        />
+                      ))}
+                    </div>
+                  </motion.div>
+                </div>
+
+                {/* ---- Latency profile + throughput ---- */}
+                <div className="grid lg:grid-cols-2 gap-6 mb-6">
+                  <motion.div
+                    initial={{ opacity: 0, y: 28 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.6, delay: 0.65, ease: EASE }}
+                    className={`rounded-3xl p-6 md:p-7 shadow-2xl text-left ${
+                      darkMode ? 'bg-gray-800/70 border border-white/10' : 'bg-white border border-purple-100'
+                    }`}
+                  >
+                    <h3 className={`text-lg font-bold mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>Latency Profile</h3>
+                    <p className={`text-sm mb-6 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                      Response times by percentile, against the pre-optimisation baseline (dashed).
+                    </p>
+
+                    <div className="space-y-6">
+                      {latencyProfiles.map((p, pi) => (
+                        <div key={p.name}>
+                          <div className="flex items-center justify-between mb-2.5">
+                            <div className="flex items-center gap-2">
+                              <span className="w-2.5 h-2.5 rounded-full" style={{ background: p.color }} />
+                              <span className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>{p.name}</span>
+                            </div>
+                            <span className="text-xs font-semibold text-emerald-500">
+                              −{Math.round((1 - p.p95 / p.before) * 100)}% at p95
+                            </span>
+                          </div>
+
+                          <div className="space-y-1.5">
+                            {([['p50', p.p50], ['p95', p.p95], ['p99', p.p99]] as [string, number][]).map(([tier, ms], ti) => (
+                              <div key={tier} className="flex items-center gap-3">
+                                <span className={`text-[11px] font-mono w-7 flex-shrink-0 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>{tier}</span>
+                                {/* relative wrapper matches the track exactly so the baseline marker lines up */}
+                                <div className="relative flex-1">
+                                  <div className={`h-4 rounded-md overflow-hidden ${darkMode ? 'bg-gray-900/60' : 'bg-gray-100'}`}>
+                                    <motion.div
+                                      className="h-full rounded-md"
+                                      style={{ background: p.color, opacity: 1 - ti * 0.22 }}
+                                      initial={{ width: '0%' }}
+                                      animate={showImpact ? { width: `${(ms / 450) * 100}%` } : { width: '0%' }}
+                                      transition={{ duration: 1, delay: 0.85 + pi * 0.12 + ti * 0.08, ease: EASE }}
+                                    />
+                                  </div>
+                                  <div
+                                    className="absolute top-0 border-l border-dashed pointer-events-none z-10"
+                                    style={{
+                                      left: `${(p.before / 450) * 100}%`,
+                                      height: ti < 2 ? 'calc(100% + 6px)' : '100%',
+                                      borderColor: darkMode ? 'rgba(248,113,113,0.65)' : 'rgba(239,68,68,0.55)'
+                                    }}
+                                  />
+                                </div>
+                                <span className={`text-[11px] font-bold tabular-nums w-12 text-right flex-shrink-0 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>{ms}ms</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <p className={`text-xs mt-5 flex items-center gap-2 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                      <span className="inline-block w-4 border-t border-dashed" style={{ borderColor: darkMode ? 'rgba(248,113,113,0.6)' : 'rgba(239,68,68,0.5)' }} />
+                      Baseline before optimisation
+                    </p>
+                  </motion.div>
+
+                  <motion.div
+                    initial={{ opacity: 0, y: 28 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.6, delay: 0.7, ease: EASE }}
+                    className={`rounded-3xl p-6 md:p-7 shadow-2xl text-left flex flex-col ${
+                      darkMode ? 'bg-gray-800/70 border border-white/10' : 'bg-white border border-purple-100'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-4 mb-1">
+                      <div>
+                        <h3 className={`text-lg font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>Peak Throughput</h3>
+                        <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                          Highest sustained requests per minute handled each month.
+                        </p>
+                      </div>
+                      <BarChart3 size={20} className={darkMode ? 'text-purple-400' : 'text-purple-500'} />
+                    </div>
+
+                    <div className="flex items-end gap-1.5 md:gap-2 h-48 mt-6 mb-3">
+                      {throughput.map((v, i) => (
+                        <div key={impactMonths[i]} className="flex-1 flex flex-col items-center justify-end h-full group">
+                          <span className={`text-[10px] font-bold mb-1 opacity-0 group-hover:opacity-100 transition-opacity ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                            {v}K
+                          </span>
+                          <motion.div
+                            className="w-full rounded-t-md bg-gradient-to-t from-purple-600 via-fuchsia-500 to-cyan-400"
+                            initial={{ height: '0%' }}
+                            animate={showImpact ? { height: `${(v / 184) * 100}%` } : { height: '0%' }}
+                            transition={{ duration: 0.9, delay: 0.8 + i * 0.05, ease: EASE }}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex gap-1.5 md:gap-2">
+                      {impactMonths.map((m, i) => (
+                        <span key={m} className={`flex-1 text-center text-[10px] ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                          {i % 2 === 0 ? m : ''}
+                        </span>
+                      ))}
+                    </div>
+
+                    <p className={`text-sm mt-auto pt-5 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                      A <span className={darkMode ? 'text-cyan-400 font-bold' : 'text-purple-600 font-bold'}>15×</span> increase
+                      in peak load absorbed without adding a rewrite — horizontal scaling and caching carried it.
+                    </p>
+                  </motion.div>
+                </div>
+
+                {/* ---- Per-project breakdown ---- */}
+                <motion.h3
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ duration: 0.5, delay: 0.75 }}
+                  className={`text-sm font-bold tracking-wider mb-4 text-left ${darkMode ? 'text-purple-400' : 'text-purple-600'}`}
+                >
+                  PROJECT BREAKDOWN
+                </motion.h3>
+                <div className="grid md:grid-cols-3 gap-6 mb-6">
+                  {impactProjects.map((proj, pIdx) => (
+                    <motion.div
+                      key={proj.title}
+                      initial={{ opacity: 0, y: 28 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.6, delay: 0.78 + pIdx * 0.1, ease: EASE }}
+                      whileHover={{ y: -6 }}
+                      className={`relative overflow-hidden rounded-3xl p-6 shadow-2xl text-left ${
+                        darkMode ? 'bg-gray-800/70 border border-white/10' : 'bg-white border border-purple-100'
+                      }`}
+                    >
+                      <div className={`absolute inset-x-0 top-0 h-1 bg-gradient-to-r ${proj.gradient}`} />
+
+                      <h4 className={`text-xl font-bold mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>{proj.title}</h4>
+                      <p className="text-xs font-semibold mb-3" style={{ color: proj.accent }}>{proj.subtitle}</p>
+                      <p className={`text-sm leading-relaxed mb-5 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{proj.summary}</p>
+
+                      <div className="grid grid-cols-3 gap-2 mb-5">
+                        {proj.stats.map((stat) => (
+                          <div key={stat.label} className={`rounded-xl p-2.5 text-center ${darkMode ? 'bg-gray-900/60' : 'bg-gray-50'}`}>
+                            <stat.icon size={15} className="mx-auto mb-1" style={{ color: proj.accent }} />
+                            <p className={`text-sm font-black leading-tight tabular-nums ${darkMode ? 'text-white' : 'text-gray-900'}`}>{stat.value}</p>
+                            <p className={`text-[10px] leading-tight ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>{stat.label}</p>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="space-y-3">
+                        {proj.metrics.map((metric, mi) => (
+                          <div key={metric.label}>
+                            <div className="flex justify-between mb-1">
+                              <span className={`text-xs font-medium ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>{metric.label}</span>
+                              <span className={`text-xs font-bold tabular-nums ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                                <AnimatedNumber value={metric.value} suffix="%" run={showImpact} delay={0.95 + pIdx * 0.1 + mi * 0.06} />
+                              </span>
+                            </div>
+                            <div className={`h-2 rounded-full overflow-hidden ${darkMode ? 'bg-gray-700' : 'bg-gray-200'}`}>
+                              <motion.div
+                                className={`h-full rounded-full bg-gradient-to-r ${proj.gradient}`}
+                                initial={{ width: '0%' }}
+                                animate={showImpact ? { width: `${metric.value}%` } : { width: '0%' }}
+                                transition={{ duration: 1, delay: 0.95 + pIdx * 0.1 + mi * 0.06, ease: EASE }}
+                              />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </motion.div>
+                  ))}
+                </div>
+
+                {/* ---- Engineering takeaways ---- */}
+                <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                  {engineeringNotes.map((note, i) => (
+                    <motion.div
+                      key={note.title}
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.5, delay: 0.9 + i * 0.08, ease: EASE }}
+                      className={`rounded-2xl p-5 text-left ${
+                        darkMode ? 'bg-white/[0.04] border border-white/10' : 'bg-white/70 border border-purple-100'
+                      }`}
+                    >
+                      <note.icon size={18} className={`mb-3 ${darkMode ? 'text-cyan-400' : 'text-purple-600'}`} />
+                      <p className={`text-sm font-bold mb-1.5 ${darkMode ? 'text-white' : 'text-gray-900'}`}>{note.title}</p>
+                      <p className={`text-xs leading-relaxed ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{note.body}</p>
+                    </motion.div>
+                  ))}
+                </div>
+
+                {/* Scroll-up arrow to collapse Impact */}
+                <motion.button
+                  onClick={() => setShowImpact(false)}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1, y: [0, -10, 0] }}
+                  transition={{ opacity: { duration: 0.4, delay: 0.6 }, y: { repeat: Infinity, duration: 1.8, ease: "easeInOut" } }}
+                  whileHover={{ scale: 1.15 }}
+                  whileTap={{ scale: 0.9 }}
+                  aria-label="Hide project impact"
+                  className={`mx-auto mt-12 flex items-center justify-center w-14 h-14 rounded-full shadow-xl border-2 ${
+                    darkMode
+                      ? 'bg-gray-800/80 border-purple-500/40 text-purple-300 hover:bg-gray-700'
+                      : 'bg-white/80 border-purple-200 text-purple-600 hover:bg-white'
+                  }`}
+                >
+                  <ChevronUp size={26} />
+                </motion.button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </motion.div>
+        </motion.section>
+
+      <motion.div
+        animate={{ opacity: showImpact ? 0 : 1 }}
+        transition={{ duration: 0.3 }}
+        style={{ display: showImpact ? 'none' : 'block' }}
+        aria-hidden={showImpact}
+      >
       {/* About Section */}
       <section id="about" className={`py-20 px-6 ${
         darkMode ? 'bg-gray-900/50' : 'bg-white/50'
@@ -771,22 +1489,22 @@ export default function Home() {
                       }
                     }}
                     whileHover={{ y: -8, scale: 1.02, transition: { duration: 0.3, ease: [0.4, 0, 0.2, 1] } }}
-                    className={`rounded-3xl overflow-hidden shadow-2xl will-change-transform ${
-                      darkMode 
-                        ? 'bg-gray-800 hover:shadow-purple-500/50' 
+                    className={`rounded-3xl overflow-hidden shadow-2xl will-change-transform flex flex-col h-full ${
+                      darkMode
+                        ? 'bg-gray-800 hover:shadow-purple-500/50'
                         : 'bg-white hover:shadow-purple-200'
                     }`}
                   >
-                  <div className="h-48 bg-gradient-to-br from-cyan-400 via-purple-500 to-pink-600 relative overflow-hidden">
-                    <motion.div 
+                  <div className="h-48 bg-gradient-to-br from-cyan-400 via-purple-500 to-pink-600 relative overflow-hidden flex-shrink-0">
+                    <motion.div
                       className="absolute inset-0 flex items-center justify-center"
                       whileHover={{ scale: 1.1 }}
                     >
                       <Code2 size={80} className="text-white/90" />
                     </motion.div>
                   </div>
-                  
-                  <div className="p-6">
+
+                  <div className="p-6 flex flex-col flex-1">
                     <h3 className={`text-2xl font-bold mb-2 ${
                       darkMode ? 'text-white' : 'text-gray-900'
                     }`}>{project.title}</h3>
@@ -825,25 +1543,56 @@ export default function Home() {
                       ))}
                     </div>
                     
-                    <div className="flex gap-3">
-                      <motion.a
-                        whileHover={{ scale: 1.05 }}
-                        whileTap={{ scale: 0.95 }}
-                        href={project.github}
-                        className="flex-1 py-3 bg-gradient-to-r from-gray-800 to-gray-900 text-white rounded-xl text-center text-sm font-bold hover:from-gray-700 hover:to-gray-800 transition-all flex items-center justify-center gap-2 shadow-lg"
-                      >
-                        <Github size={16} />
-                        Code
-                      </motion.a>
-                      <motion.a
-                        whileHover={{ scale: 1.05 }}
-                        whileTap={{ scale: 0.95 }}
-                        href={project.demo}
-                        className="flex-1 py-3 bg-gradient-to-r from-cyan-500 to-purple-600 text-white rounded-xl text-center text-sm font-bold hover:from-cyan-600 hover:to-purple-700 transition-all flex items-center justify-center gap-2 shadow-lg"
-                      >
-                        <ExternalLink size={16} />
-                        Demo
-                      </motion.a>
+                    <div className="flex gap-3 mt-auto">
+                      {project.github ? (
+                        <motion.a
+                          whileHover={{ scale: 1.05 }}
+                          whileTap={{ scale: 0.95 }}
+                          href={project.github}
+                          className="flex-1 py-3 bg-gradient-to-r from-gray-800 to-gray-900 text-white rounded-xl text-center text-sm font-bold hover:from-gray-700 hover:to-gray-800 transition-all flex items-center justify-center gap-2 shadow-lg"
+                        >
+                          <Github size={16} />
+                          Code
+                        </motion.a>
+                      ) : null}
+                      {project.demo ? (
+                        <motion.a
+                          whileHover={{ scale: 1.05 }}
+                          whileTap={{ scale: 0.95 }}
+                          href={project.demo}
+                          className="flex-1 py-3 bg-gradient-to-r from-cyan-500 to-purple-600 text-white rounded-xl text-center text-sm font-bold hover:from-cyan-600 hover:to-purple-700 transition-all flex items-center justify-center gap-2 shadow-lg"
+                        >
+                          <ExternalLink size={16} />
+                          Demo
+                        </motion.a>
+                      ) : null}
+                      {!project.github && !project.demo ? (
+                        project.weburl ? (
+                          <motion.a
+                            whileHover={{ scale: 1.05 }}
+                            whileTap={{ scale: 0.95 }}
+                            href={project.weburl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className={`w-full py-3 rounded-xl text-center text-sm font-bold border transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                              darkMode
+                                ? 'bg-purple-900/30 text-purple-300 border-purple-500/30 hover:bg-purple-900/50 hover:border-purple-400/50'
+                                : 'bg-purple-50 text-purple-700 border-purple-200 hover:bg-purple-100 hover:border-purple-300'
+                            }`}
+                          >
+                            <ExternalLink size={16} />
+                            Private Client Project
+                          </motion.a>
+                        ) : (
+                          <div className={`w-full py-3 rounded-xl text-center text-sm font-bold border ${
+                            darkMode
+                              ? 'bg-gray-800/40 text-gray-400 border-gray-600/30'
+                              : 'bg-gray-100 text-gray-500 border-gray-200'
+                          }`}>
+                            Private Client Project
+                          </div>
+                        )
+                      ) : null}
                     </div>
                   </div>
                 </motion.div>
@@ -869,18 +1618,19 @@ export default function Home() {
               Work <span className="bg-gradient-to-r from-cyan-500 to-pink-600 bg-clip-text text-transparent">Experience</span>
             </motion.h2>
             
-            <div className="space-y-8">
-              {experience.map((exp, idx) => (
-                <motion.div
-                  key={idx}
-                  variants={itemVariants}
-                  whileHover={{ x: 10, scale: 1.01, transition: { duration: 0.3, ease: [0.4, 0, 0.2, 1] } }}
-                  className={`rounded-3xl p-8 shadow-2xl will-change-transform relative overflow-hidden ${
-                    darkMode 
-                      ? 'bg-gradient-to-r from-gray-800 to-purple-900/30 hover:shadow-purple-500/30' 
-                      : 'bg-white hover:shadow-purple-200'
-                  }`}
-                >
+            {experience.map((exp, idx) => (
+              <motion.div
+                key={idx}
+                variants={itemVariants}
+                whileHover={{ x: 10, scale: 1.01, transition: { duration: 0.3, ease: [0.4, 0, 0.2, 1] } }}
+                className={`rounded-3xl p-8 shadow-2xl will-change-transform relative overflow-hidden ${
+                  idx > 0 ? 'mt-8' : ''
+                } ${
+                  darkMode 
+                    ? 'bg-gradient-to-r from-gray-800 to-purple-900/30 hover:shadow-purple-500/30' 
+                    : 'bg-white hover:shadow-purple-200'
+                }`}
+              >
                   <div className="absolute top-0 left-0 w-2 h-full bg-gradient-to-b from-cyan-500 via-purple-500 to-pink-500" />
                   
                   <div className="ml-6">
@@ -931,7 +1681,6 @@ export default function Home() {
                   </div>
                 </motion.div>
               ))}
-            </div>
           </motion.div>
         </div>
       </section>
@@ -1093,7 +1842,7 @@ export default function Home() {
                     key={idx}
                     href={contact.href}
                     whileHover={{ y: -8, scale: 1.03, transition: { duration: 0.3, ease: [0.4, 0, 0.2, 1] } }}
-                    className={`p-6 rounded-2xl will-change-transform ${
+                    className={`p-6 rounded-2xl will-change-transform min-w-0 overflow-hidden text-center ${
                       darkMode
                         ? 'bg-gradient-to-br from-purple-900/50 to-pink-900/50 hover:from-purple-800/50 hover:to-pink-800/50'
                         : 'bg-gradient-to-br from-purple-50 to-pink-50 hover:from-purple-100 hover:to-pink-100'
@@ -1105,7 +1854,7 @@ export default function Home() {
                     <p className={`text-sm font-semibold mb-1 ${
                       darkMode ? 'text-gray-400' : 'text-gray-500'
                     }`}>{contact.label}</p>
-                    <p className={`font-bold ${
+                    <p className={`font-bold text-sm break-all leading-snug ${
                       darkMode ? 'text-white' : 'text-gray-900'
                     }`}>{contact.value}</p>
                   </motion.a>
@@ -1115,6 +1864,7 @@ export default function Home() {
           </motion.div>
         </div>
       </section>
+      </motion.div>
       </main>
 
       {/* Footer */}
